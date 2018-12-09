@@ -771,6 +771,7 @@ class Runtime extends EventEmitter {
             color1: extensionInfo.colour || '#0FBD8C',
             color2: extensionInfo.colourSecondary || '#0DA57A',
             color3: extensionInfo.colourTertiary || '#0B8E69',
+            customFieldTypes: {},
             blocks: [],
             menus: []
         };
@@ -779,7 +780,21 @@ class Runtime extends EventEmitter {
 
         this._fillExtensionCategory(categoryInfo, extensionInfo);
 
-        this.emit(Runtime.EXTENSION_ADDED, categoryInfo.blocks.concat(categoryInfo.menus));
+
+        const fieldTypeDefinitionsForScratch = [];
+        for (const fieldTypeName in categoryInfo.customFieldTypes) {
+            fieldTypeDefinitionsForScratch.push(categoryInfo.customFieldTypes[fieldTypeName]);
+        };
+
+        const allBlocks = categoryInfo.blocks.concat(categoryInfo.menus).concat(fieldTypeDefinitionsForScratch);
+
+        this.emit(Runtime.EXTENSION_ADDED, allBlocks);
+
+        // Emit events for custom field types from extension
+        for (const fieldTypeName in categoryInfo.customFieldTypes) {
+            const fieldTypeInfo = categoryInfo.customFieldTypes[fieldTypeName];
+            this.emit(Runtime.EXTENSION_FIELD_ADDED, { name: fieldTypeName, implementation: fieldTypeInfo.fieldType });
+        }
     }
 
     /**
@@ -803,7 +818,7 @@ class Runtime extends EventEmitter {
     }
 
     /**
-     * Read extension information, convert menus and blocks, and store the results in the provided category object.
+     *  Read extension information, convert menus, blocks and custom field types, and store the results in the provided category object. 
      * @param {CategoryInfo} categoryInfo - the category to be filled
      * @param {ExtensionMetadata} extensionInfo - the extension metadata to read
      * @private
@@ -816,6 +831,20 @@ class Runtime extends EventEmitter {
                 categoryInfo.menus.push(convertedMenu);
             }
         }
+        for (const fieldTypeName in extensionInfo.customFieldTypes) {
+            if (extensionInfo.customFieldTypes.hasOwnProperty(fieldTypeName)) {
+                const fieldType = extensionInfo.customFieldTypes[fieldTypeName];
+                const extendedFieldTypeName = categoryInfo.id + '_' + fieldTypeName; // Can't use _ as seperator?
+
+                const convertedFieldType = this._buildCustomFieldTypeForScratchBlocks(
+                    extendedFieldTypeName,
+                    fieldType,
+                    categoryInfo
+               );
+
+                categoryInfo.customFieldTypes[extendedFieldTypeName] = convertedFieldType;
+            }
+        };
 
         for (const blockInfo of extensionInfo.blocks) {
             if (blockInfo === '---') {
@@ -883,6 +912,30 @@ class Runtime extends EventEmitter {
                         type: 'field_dropdown',
                         name: menuName,
                         options: options
+                    }
+                ]
+            }
+        };
+    }
+
+    /**
+     * Build the scratch-blocks JSON needed for a fieldType.
+     * Custom field types need to be namespaced to the extension so that extensions can't interfere with each other
+     * @returns {object} - Object to be inserted into scratch-blocks
+     */
+    _buildCustomFieldTypeForScratchBlocks (fieldTypeName, fieldType, categoryInfo) {
+        return {
+            json: {
+                message0: '%1',
+                output: fieldType.output,
+                colour: categoryInfo.color1,
+                colourSecondary: categoryInfo.color2,
+                colourTertiary: categoryInfo.color3,
+                outputShape: ScratchBlocksConstants.OUTPUT_SHAPE_ROUND,
+               args0: [
+                    {
+                        name: fieldTypeName,
+                        type: fieldTypeName
                     }
                 ]
             }
@@ -1057,7 +1110,24 @@ class Runtime extends EventEmitter {
         };
 
         const argInfo = context.blockInfo.arguments[placeholder] || {};
-        const argTypeInfo = ArgumentTypeMap[argInfo.type] || {};
+        let argTypeInfo = ArgumentTypeMap[argInfo.type] || {};
+
+        const extendedFieldTypeName = context.categoryInfo.id + '_' + argInfo.type;
+        const customFieldTypeNames = [];
+        for (const fieldTypeName in context.categoryInfo.customFieldTypes) {
+            customFieldTypeNames.push(fieldTypeName);
+        }
+
+        if (!ArgumentTypeMap[argInfo.type] && customFieldTypeNames.includes(extendedFieldTypeName)) {
+            // Extension has registered a matching custom fieldType, use structure matching ArgumentTypeMap
+            argTypeInfo = {
+                shadowType: extendedFieldTypeName,
+                fieldType: extendedFieldTypeName.toUpperCase()
+            };
+        };
+        console.log("arg");
+        console.log(argTypeInfo);
+
         const defaultValue = (typeof argInfo.defaultValue === 'undefined' ?
             '' :
             escapeHtml(maybeFormatMessage(argInfo.defaultValue, this.makeMessageContextForTarget()).toString()));
