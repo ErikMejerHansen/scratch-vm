@@ -552,15 +552,23 @@ class Runtime extends EventEmitter {
      * Event name for reporting that an extension was added.
      * @const {string}
      */
-    static get EXTENSION_ADDED () {
+    static get EXTENSION_ADDED() {
         return 'EXTENSION_ADDED';
+    }
+
+    /**
+     * Event name for reporting that an extension as asked for a custom field to be added
+     * @const {string}
+     */
+    static get EXTENSION_FIELD_ADDED() {
+        return 'EXTENSION_FIELD_ADDED';
     }
 
     /**
      * Event name for updating the available set of peripheral devices.
      * @const {string}
      */
-    static get PERIPHERAL_LIST_UPDATE () {
+    static get PERIPHERAL_LIST_UPDATE() {
         return 'PERIPHERAL_LIST_UPDATE';
     }
 
@@ -764,6 +772,7 @@ class Runtime extends EventEmitter {
             color1: extensionInfo.colour || '#0FBD8C',
             color2: extensionInfo.colourSecondary || '#0DA57A',
             color3: extensionInfo.colourTertiary || '#0B8E69',
+            customFieldTypes: {},
             blocks: [],
             menus: []
         };
@@ -772,7 +781,23 @@ class Runtime extends EventEmitter {
 
         this._fillExtensionCategory(categoryInfo, extensionInfo);
 
-        this.emit(Runtime.EXTENSION_ADDED, categoryInfo.blocks.concat(categoryInfo.menus));
+        const fieldTypeDefinitionsForScratch = [];
+        for (const fieldTypeName in categoryInfo.customFieldTypes) {
+            if (extensionInfo.customFieldTypes.hasOwnProperty(fieldTypeName)) {
+                const fieldTypeInfo = categoryInfo.customFieldTypes[fieldTypeName];
+                fieldTypeDefinitionsForScratch.push(fieldTypeInfo.scratchBlocksDefinition);
+
+                // Emit events for custom field types from extension
+                this.emit(Runtime.EXTENSION_FIELD_ADDED, {
+                    name: 'field_' + fieldTypeInfo.extendedName,
+                    implementation: fieldTypeInfo.fieldImplementation
+                });
+            }
+        }
+
+        const allBlocks = fieldTypeDefinitionsForScratch.concat(categoryInfo.blocks).concat(categoryInfo.menus);
+
+        this.emit(Runtime.EXTENSION_ADDED, allBlocks);
     }
 
     /**
@@ -780,7 +805,7 @@ class Runtime extends EventEmitter {
      * @param  {ExtensionMetadata} extensionInfo - new info (results of running getInfo) for an extension
      * @private
      */
-    _refreshExtensionPrimitives (extensionInfo) {
+    _refreshExtensionPrimitives(extensionInfo) {
         let extensionBlocks = [];
         for (const categoryInfo of this._blockInfo) {
             if (extensionInfo.id === categoryInfo.id) {
@@ -796,17 +821,30 @@ class Runtime extends EventEmitter {
     }
 
     /**
-     * Read extension information, convert menus and blocks, and store the results in the provided category object.
+     *  Read extension information, convert menus, blocks and custom field types, and store the results in the provided category object.
      * @param {CategoryInfo} categoryInfo - the category to be filled
      * @param {ExtensionMetadata} extensionInfo - the extension metadata to read
      * @private
      */
-    _fillExtensionCategory (categoryInfo, extensionInfo) {
+    _fillExtensionCategory(categoryInfo, extensionInfo) {
         for (const menuName in extensionInfo.menus) {
             if (extensionInfo.menus.hasOwnProperty(menuName)) {
                 const menuItems = extensionInfo.menus[menuName];
                 const convertedMenu = this._buildMenuForScratchBlocks(menuName, menuItems, categoryInfo);
                 categoryInfo.menus.push(convertedMenu);
+            }
+        }
+        for (const fieldTypeName in extensionInfo.customFieldTypes) {
+            if (extensionInfo.customFieldTypes.hasOwnProperty(fieldTypeName)) {
+                const fieldType = extensionInfo.customFieldTypes[fieldTypeName];
+                const fieldTypeInfo = this._buildCustomFieldInfo(
+                    fieldTypeName,
+                    fieldType,
+                    extensionInfo.id,
+                    categoryInfo
+                );
+
+                categoryInfo.customFieldTypes[fieldTypeName] = fieldTypeInfo;
             }
         }
 
@@ -876,6 +914,51 @@ class Runtime extends EventEmitter {
                         type: 'field_dropdown',
                         name: menuName,
                         options: options
+                    }
+                ]
+            }
+        };
+    }
+
+    _buildCustomFieldInfo(fieldName, fieldInfo, extensionId, categoryInfo) {
+        const extendedName = extensionId + '_' + fieldName;
+        return {
+            fieldName: fieldName,
+            extendedName: extendedName,
+            argumentTypeInfo: {
+                shadowType: extendedName,
+                fieldType: 'field_' + extendedName
+            },
+            scratchBlocksDefinition: this._buildCustomFieldTypeForScratchBlocks(
+                extendedName,
+                fieldInfo.output,
+                fieldInfo.outputShape,
+                categoryInfo
+            ),
+            fieldImplementation: fieldInfo.implementation
+        };
+    }
+
+    /**
+     * Build the scratch-blocks JSON needed for a fieldType.
+     * Custom field types need to be namespaced to the extension so that extensions can't interfere with each other
+     * @returns {object} - Object to be inserted into scratch-blocks
+     */
+    _buildCustomFieldTypeForScratchBlocks(fieldName, output, outputShape, categoryInfo) {
+        return {
+            json: {
+                type: fieldName,
+                message0: '%1',
+                inputsInline: true,
+                output: output,
+                colour: categoryInfo.color1,
+                colourSecondary: categoryInfo.color2,
+                colourTertiary: categoryInfo.color3,
+                outputShape: outputShape,
+                args0: [
+                    {
+                        name: 'field_' + fieldName,
+                        type: 'field_' + fieldName
                     }
                 ]
             }
@@ -1050,18 +1133,25 @@ class Runtime extends EventEmitter {
         };
 
         const argInfo = context.blockInfo.arguments[placeholder] || {};
-        const argTypeInfo = ArgumentTypeMap[argInfo.type] || {};
-        const defaultValue = (typeof argInfo.defaultValue === 'undefined' ?
-            '' :
-            escapeHtml(maybeFormatMessage(argInfo.defaultValue, this.makeMessageContextForTarget()).toString()));
+        let argTypeInfo = ArgumentTypeMap[argInfo.type] || {};
+
+        // Field type not a standard field type, see if extension has registered custom field type
+        if (!ArgumentTypeMap[argInfo.type] && context.categoryInfo.customFieldTypes[argInfo.type]) {
+            argTypeInfo = context.categoryInfo.customFieldTypes[argInfo.type].argumentTypeInfo;
+        }
+
+        const defaultValue =
+            typeof argInfo.defaultValue === 'undefined'
+                ? ''
+                : escapeHtml(maybeFormatMessage(argInfo.defaultValue, this.makeMessageContextForTarget()).toString());
 
         if (argTypeInfo.check) {
             argJSON.check = argTypeInfo.check;
         }
 
-        const shadowType = (argInfo.menu ?
-            this._makeExtensionMenuId(argInfo.menu, context.categoryInfo.id) :
-            argTypeInfo.shadowType);
+        const shadowType = argInfo.menu
+            ? this._makeExtensionMenuId(argInfo.menu, context.categoryInfo.id)
+            : argTypeInfo.shadowType;
         const fieldType = argInfo.menu || argTypeInfo.fieldType;
 
         // <value> is the ScratchBlocks name for a block input.

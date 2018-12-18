@@ -16,9 +16,9 @@ const validate = require('scratch-parser');
 
 const Variable = require('./engine/variable');
 
-const {loadCostume} = require('./import/load-costume.js');
-const {loadSound} = require('./import/load-sound.js');
-const {serializeSounds, serializeCostumes} = require('./serialization/serialize-assets');
+const { loadCostume } = require('./import/load-costume.js');
+const { loadSound } = require('./import/load-sound.js');
+const { serializeSounds, serializeCostumes } = require('./serialization/serialize-assets');
 require('canvas-toBlob');
 
 const RESERVED_NAMES = ['_mouse_', '_stage_', '_edge_', '_myself_', '_random_'];
@@ -40,7 +40,7 @@ const CORE_EXTENSIONS = [
  * @constructor
  */
 class VirtualMachine extends EventEmitter {
-    constructor () {
+    constructor() {
         super();
 
         /**
@@ -107,6 +107,9 @@ class VirtualMachine extends EventEmitter {
         });
         this.runtime.on(Runtime.EXTENSION_ADDED, blocksInfo => {
             this.emit(Runtime.EXTENSION_ADDED, blocksInfo);
+        });
+        this.runtime.on(Runtime.EXTENSION_FIELD_ADDED, (fieldName, fieldImplementation) => {
+            this.emit(Runtime.EXTENSION_FIELD_ADDED, fieldName, fieldImplementation);
         });
         this.runtime.on(Runtime.BLOCKSINFO_UPDATE, blocksInfo => {
             this.emit(Runtime.BLOCKSINFO_UPDATE, blocksInfo);
