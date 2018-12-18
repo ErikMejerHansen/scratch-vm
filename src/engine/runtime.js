@@ -801,7 +801,7 @@ class Runtime extends EventEmitter {
             }
         }
 
-        const allBlocks = categoryInfo.blocks.concat(categoryInfo.menus).concat(fieldTypeDefinitionsForScratch);
+        const allBlocks = fieldTypeDefinitionsForScratch.concat(categoryInfo.blocks).concat(categoryInfo.menus);
 
         this.emit(Runtime.EXTENSION_ADDED, allBlocks);
     }
@@ -962,7 +962,7 @@ class Runtime extends EventEmitter {
                 outputShape: outputShape,
                 args0: [
                     {
-                        name: fieldName,
+                        name: 'field_' + fieldName,
                         type: 'field_' + fieldName
                     }
                 ]
@@ -1143,7 +1143,6 @@ class Runtime extends EventEmitter {
 
         // Field type not a standard field type, see if extension has registered custom field type
         if (!ArgumentTypeMap[argInfo.type] && context.categoryInfo.customFieldTypes[argInfo.type]) {
-            //TODO: EMH: DefaultValue gets dropped?
             argTypeInfo = context.categoryInfo.customFieldTypes[argInfo.type].argumentTypeInfo;
         }
 
