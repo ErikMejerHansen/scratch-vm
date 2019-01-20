@@ -8,6 +8,7 @@ const ExtensionManager = require('./extension-support/extension-manager');
 const log = require('./util/log');
 const MathUtil = require('./util/math-util');
 const Runtime = require('./engine/runtime');
+const {SB1File, ValidationError} = require('scratch-sb1-converter');
 const sb2 = require('./serialization/sb2');
 const sb3 = require('./serialization/sb3');
 const StringUtil = require('./util/string-util');
@@ -126,8 +127,11 @@ class VirtualMachine extends EventEmitter {
         this.runtime.on(Runtime.PERIPHERAL_REQUEST_ERROR, () =>
             this.emit(Runtime.PERIPHERAL_REQUEST_ERROR)
         );
-        this.runtime.on(Runtime.PERIPHERAL_DISCONNECT_ERROR, data =>
-            this.emit(Runtime.PERIPHERAL_DISCONNECT_ERROR, data)
+        this.runtime.on(Runtime.PERIPHERAL_DISCONNECTED, () =>
+            this.emit(Runtime.PERIPHERAL_DISCONNECTED)
+        );
+        this.runtime.on(Runtime.PERIPHERAL_CONNECTION_LOST_ERROR, data =>
+            this.emit(Runtime.PERIPHERAL_CONNECTION_LOST_ERROR, data)
         );
         this.runtime.on(Runtime.PERIPHERAL_SCAN_TIMEOUT, () =>
             this.emit(Runtime.PERIPHERAL_SCAN_TIMEOUT)
@@ -298,7 +302,27 @@ class VirtualMachine extends EventEmitter {
                 if (error) return reject(error);
                 resolve(res);
             });
-        });
+        })
+            .catch(error => {
+                try {
+                    const sb1 = new SB1File(input);
+                    const json = sb1.json;
+                    json.projectVersion = 2;
+                    return Promise.resolve([json, sb1.zip]);
+                } catch (sb1Error) {
+                    if (sb1Error instanceof ValidationError) {
+                        // The input does not validate as a Scratch 1 file.
+                    } else {
+                        // The project appears to be a Scratch 1 file but it
+                        // could not be successfully translated into a Scratch 2
+                        // project.
+                        return Promise.reject(sb1Error);
+                    }
+                }
+                // Throw original error since the input does not appear to be
+                // an SB1File.
+                return Promise.reject(error);
+            });
 
         return validationPromise
             .then(validatedInput => this.deserializeProject(validatedInput[0], validatedInput[1]))
@@ -477,11 +501,18 @@ class VirtualMachine extends EventEmitter {
 
         return Promise.all(extensionPromises).then(() => {
             targets.forEach(target => {
-                this.runtime.targets.push(target);
+                this.runtime.addTarget(target);
                 (/** @type RenderedTarget */ target).updateAllDrawableProperties();
                 // Ensure unique sprite name
                 if (target.isSprite()) this.renameSprite(target.id, target.getName());
             });
+            // Sort the executable targets by layerOrder.
+            // Remove layerOrder property after use.
+            this.runtime.executableTargets.sort((a, b) => a.layerOrder - b.layerOrder);
+            targets.forEach(target => {
+                delete target.layerOrder;
+            });
+
             // Select the first target for editing, e.g., the first sprite.
             if (wholeProject && (targets.length > 1)) {
                 this.editingTarget = targets[1];
@@ -998,7 +1029,8 @@ class VirtualMachine extends EventEmitter {
             throw new Error('No sprite associated with this target.');
         }
         return target.duplicate().then(newTarget => {
-            this.runtime.targets.push(newTarget);
+            this.runtime.addTarget(newTarget);
+            newTarget.goBehindOther(target);
             this.setEditingTarget(newTarget.id);
         });
     }

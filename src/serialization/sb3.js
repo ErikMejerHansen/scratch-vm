@@ -14,7 +14,6 @@ const StageLayering = require('../engine/stage-layering');
 const log = require('../util/log');
 const uid = require('../util/uid');
 const MathUtil = require('../util/math-util');
-const StringUtil = require('../util/string-util');
 
 const {loadCostume} = require('../import/load-costume.js');
 const {loadSound} = require('../import/load-sound.js');
@@ -448,6 +447,13 @@ const serializeTarget = function (target, extensions) {
     obj.broadcasts = vars.broadcasts;
     [obj.blocks, targetExtensions] = serializeBlocks(target.blocks);
     obj.comments = serializeComments(target.comments);
+
+    // TODO remove this check/patch when (#1901) is fixed
+    if (target.currentCostume < 0 || target.currentCostume >= target.costumes.length) {
+        log.warn(`currentCostume property for target ${target.name} is out of range`);
+        target.currentCostume = MathUtil.clamp(target.currentCostume, 0, target.costumes.length - 1);
+    }
+
     obj.currentCostume = target.currentCostume;
     obj.costumes = target.costumes.map(serializeCostume);
     obj.sounds = target.sounds.map(serializeSound);
@@ -521,7 +527,7 @@ const serialize = function (runtime, targetId) {
 
     const layerOrdering = getSimplifiedLayerOrdering(originalTargetsToSerialize);
 
-    const flattenedOriginalTargets = JSON.parse(StringUtil.stringify(originalTargetsToSerialize));
+    const flattenedOriginalTargets = originalTargetsToSerialize.map(t => t.toJSON());
 
     // If the renderer is attached, and we're serializing a whole project (not a sprite)
     // add a temporary layerOrder property to each target.
@@ -905,10 +911,7 @@ const parseScratchObject = function (object, runtime, extensions, zip) {
         // any translation that needs to happen will happen in the process
         // of building up the costume object into an sb3 format
         return deserializeSound(sound, runtime, zip)
-            .then(asset => {
-                sound.asset = asset;
-                return loadSound(sound, runtime, sprite);
-            });
+            .then(() => loadSound(sound, runtime, sprite));
         // Only attempt to load the sound after the deserialization
         // process has been completed.
     });
@@ -1011,7 +1014,7 @@ const parseScratchObject = function (object, runtime, extensions, zip) {
         target.visible = object.visible;
     }
     if (object.hasOwnProperty('currentCostume')) {
-        target.currentCostume = object.currentCostume;
+        target.currentCostume = MathUtil.clamp(object.currentCostume, 0, object.costumes.length - 1);
     }
     if (object.hasOwnProperty('rotationStyle')) {
         target.rotationStyle = object.rotationStyle;
@@ -1154,12 +1157,18 @@ const deserialize = function (json, runtime, zip, isSingleSprite) {
             parseScratchObject(target, runtime, extensions, zip))
     )
         .then(targets => targets // Re-sort targets back into original sprite-pane ordering
+            .map((t, i) => {
+                // Add layer order property to deserialized targets.
+                // This property is used to initialize executable targets in
+                // the correct order and is deleted in VM's installTargets function
+                t.layerOrder = i;
+                return t;
+            })
             .sort((a, b) => a.targetPaneOrder - b.targetPaneOrder)
             .map(t => {
                 // Delete the temporary properties used for
                 // sprite pane ordering and stage layer ordering
                 delete t.targetPaneOrder;
-                delete t.layerOrder;
                 return t;
             }))
         .then(targets => {
